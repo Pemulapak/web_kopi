@@ -10,9 +10,6 @@ if (!isset($_SESSION['admin'])) {
 $message = '';
 $error = '';
 
-// Otomatiskan status kupon yang kadaluarsa menjadi 'inactive'
-mysqli_query($conn, "UPDATE coupon SET status = 'inactive' WHERE expired_date < CURDATE()");
-
 // Handle tambah kupon
 if (isset($_POST['add_coupon'])) {
     $code = mysqli_real_escape_string($conn, strtoupper(trim($_POST['code'])));
@@ -81,13 +78,29 @@ if (isset($_POST['delete_coupon'])) {
     }
 }
 
-// Get all coupons
+// Update kupon yang sudah expired menjadi inactive
+mysqli_query($conn, "UPDATE coupon SET status = 'inactive' WHERE expired_date < CURDATE()");
+
+// Ambil Semua Data kupon yang tidak katif
+$inactive_coupons = mysqli_query($conn, "
+    SELECT c.*, 
+           COUNT(uc.id) as total_claimed,
+           COUNT(CASE WHEN uc.is_used = 1 THEN 1 END) as total_used
+    FROM coupon c 
+    LEFT JOIN user_coupons uc ON c.id = uc.coupon_id 
+    WHERE c.status = 'inactive'
+    GROUP BY c.id 
+    ORDER BY c.created_at DESC
+");
+
+// Ambil semua kupon yang masih aktif
 $coupons = mysqli_query($conn, "
     SELECT c.*, 
            COUNT(uc.id) as total_claimed,
            COUNT(CASE WHEN uc.is_used = 1 THEN 1 END) as total_used
     FROM coupon c 
     LEFT JOIN user_coupons uc ON c.id = uc.coupon_id 
+    WHERE c.status = 'active'
     GROUP BY c.id 
     ORDER BY c.created_at DESC
 ");
@@ -818,6 +831,114 @@ if (isset($_POST['edit_coupon'])) {
             </div>
         </div>
     </div>
+
+    <!-- Daftar Kupon yang dihapus atau delete -->
+            <div class="section">
+                <h2><i class="fas fa-list"></i> Daftar Kupon Hapus / In Active</h2>
+
+                <?php if (mysqli_num_rows($inactive_coupons) > 0): ?>
+
+                    <div class="table-container">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th><i class="fas fa-code"></i> Kode</th>
+                                    <th><i class="fas fa-tags"></i> Tipe</th>
+                                    <th><i class="fas fa-money-bill"></i> Nilai</th>
+                                    <th><i class="fas fa-shopping-cart"></i> Min. Belanja</th>
+                                    <th><i class="fas fa-calendar"></i> Expired</th>
+                                    <th><i class="fas fa-info-circle"></i> Status</th>
+                                    <th><i class="fas fa-chart-bar"></i> Limit</th>
+                                    <th><i class="fas fa-hand-holding"></i> Diklaim</th>
+                                    <th><i class="fas fa-check"></i> Digunakan</th>
+                                    <th><i class="fas fa-cog"></i> Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php while ($coupon = mysqli_fetch_assoc($inactive_coupons)): ?>
+                                    <tr>
+                                        <td class="coupon-code text-center"><?php echo htmlspecialchars($coupon['code']); ?></td>
+                                        <td class="text-center"><?php echo $coupon['type'] == 'percent' ? 'Persentase' : 'Nominal'; ?></td>
+                                        <td class="text-center">
+                                            <?php
+                                            if ($coupon['type'] == 'percent') {
+                                                echo $coupon['value'] . "%";
+                                            } else {
+                                                echo "Rp " . number_format($coupon['value'], 0, ',', '.');
+                                            }
+                                            ?>
+                                        </td>
+                                        <td class="text-center">Rp <?php echo number_format($coupon['cart_value'], 0, ',', '.'); ?></td>
+                                        <td class="text-center"><?php echo date('d M Y', strtotime($coupon['expired_date'])); ?></td>
+                                        <td class="text-center">
+                                            <?php
+                                            $current_date = date('Y-m-d');
+                                            if ($coupon['expired_date'] < $current_date) {
+                                                echo '<span class="status-badge status-expired">Expired</span>';
+                                            } elseif ($coupon['status'] == 'active') {
+                                                echo '<span class="status-badge status-active">Aktif</span>';
+                                            } else {
+                                                echo '<span class="status-badge status-inactive">Nonaktif</span>';
+                                            }
+                                            ?>
+                                        </td>
+                                        <td class="text-center">
+                                            <?php
+                                            if ($coupon['usage_limit']) {
+                                                echo $coupon['used_count'] . "/" . $coupon['usage_limit'];
+                                            } else {
+                                                echo "Unlimited";
+                                            }
+                                            ?>
+                                        </td>
+                                        <td class="text-center"><?php echo $coupon['total_claimed']; ?></td>
+                                        <td class="text-center"><?php echo $coupon['total_used']; ?></td>
+                                        <td class="text-center">
+                                            <div class="action-buttons">
+                                                <!-- Edit Button -->
+                                                <button type="button" class="btn btn-sm btn-primary" onclick="openEditModal(<?php echo htmlspecialchars(json_encode($coupon)); ?>)">
+                                                    <i class="fas fa-edit"></i> Edit
+                                                </button>
+
+                                                <!-- Toggle Status -->
+                                                <?php if ($coupon['expired_date'] >= $current_date): ?>
+                                                    <form method="POST" style="display: inline;">
+                                                        <input type="hidden" name="coupon_id" value="<?php echo $coupon['id']; ?>">
+                                                        <input type="hidden" name="new_status" value="<?php echo $coupon['status'] == 'active' ? 'inactive' : 'active'; ?>">
+                                                        <button type="submit" name="toggle_status" class="btn btn-sm <?php echo $coupon['status'] == 'active' ? 'btn-warning' : 'btn-success'; ?>">
+                                                            <i class="fas fa-<?php echo $coupon['status'] == 'active' ? 'pause' : 'play'; ?>"></i>
+                                                            <?php echo $coupon['status'] == 'active' ? 'Nonaktifkan' : 'Aktifkan'; ?>
+                                                        </button>
+                                                    </form>
+                                                <?php endif; ?>
+
+                                                <!-- Delete Button -->
+                                                <?php if ($coupon['total_claimed'] == 0): ?>
+                                                    <!-- Tombol Aktifkan -->
+                                                    <form method="POST" style="display: inline;">
+                                                        <input type="hidden" name="coupon_id" value="<?php echo $coupon['id']; ?>">
+                                                        <input type="hidden" name="new_status" value="active">
+                                                        <button type="submit" name="toggle_status" class="btn btn-sm btn-success">
+                                                            <i class="fas fa-play"></i> Aktifkan
+                                                        </button>
+                                                    </form>
+
+                                                <?php endif; ?>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endwhile; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php else: ?>
+                    <div class="empty-state">
+                        <i class="fas fa-ticket-alt"></i>
+                        <h3>Belum ada kupon yang dibuat</h3>
+                        <p>Mulai buat kupon pertama Anda untuk menarik lebih banyak pelanggan!</p>
+                    </div>
+                <?php endif; ?>
+            </div>
 
     <!-- Edit Modal -->
     <div id="editModal" class="modal">
